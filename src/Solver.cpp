@@ -125,6 +125,18 @@ void Solver::start(Env env, LevelInfo info) {
     m_stalled = false;
     m_bestPercent = 0.f;
     m_deaths = 0;
+    m_usePruning = true;
+    m_orbs.clear();
+    if (m_env.pl->m_objects) {
+        // Tous les objets sur lesquels un clic en l'air peut agir
+        static const std::unordered_set<int> orbIDs = {
+            36, 84, 141, 1022, 1330, 1333, 1594, 1704, 1751, 3004, 3027
+        };
+        for (auto obj : CCArrayExt<GameObject*>(m_env.pl->m_objects)) {
+            if (obj && orbIDs.contains(obj->m_objectID)) m_orbs.push_back(obj);
+        }
+    }
+    log::info("Ubot: {} orbes detectes", m_orbs.size());
     m_budget = 1500;
     m_cutoffs = 0;
     m_pruned = 0;
@@ -349,9 +361,22 @@ void Solver::enterSurvive() {
     m_phase = Phase::Survive;
 }
 
+bool Solver::nearOrb(PlayerObject* p) const {
+    // Position réelle de chaque orbe (ils peuvent être déplacés par des triggers).
+    // Marge large : mieux vaut tester un instant de trop que rater un orbe.
+    auto pp = p->getPosition();
+    for (auto orb : m_orbs) {
+        auto op = orb->getPosition();
+        if (std::abs(op.x - pp.x) < 55.f && std::abs(op.y - pp.y) < 55.f) return true;
+    }
+    return false;
+}
+
 bool Solver::actionableNow(bool pressing) const {
-    auto check = [pressing](PlayerObject* p) {
+    if (!m_usePruning) return true;
+    auto check = [this, pressing](PlayerObject* p) {
         if (!p) return false;
+        if (this->nearOrb(p)) return true;
         // modes à contrôle continu : chaque instant compte
         if (p->m_isShip || p->m_isDart || p->m_isBird || p->m_isSwing) return true;
         // orbes / anneaux / dash orbs touchés
@@ -499,6 +524,21 @@ Solver::Status Solver::work(double budgetMs) {
                             log::info("Ubot: budget elargi a {} noeuds", m_budget);
                             break;
                         }
+                        if (m_usePruning) {
+                            // Les lois ont peut-être été trop strictes : on refait la
+                            // recherche en testant tous les instants. Les "preuves"
+                            // obtenues avec l'élagage ne valent plus.
+                            m_usePruning = false;
+                            m_dead.clear();
+                            n.next = 0;
+                            n.cands.clear();
+                            n.startNodes = m_nodes;
+                            n.startCutoffs = m_cutoffs;
+                            log::info("Ubot: recherche complete sans elagage");
+                            // ré-expansion de la racine : rejouer jusqu'à elle puis Survive
+                            beginRestore(n.tick, Phase::ReSurvive);
+                            break;
+                        }
                         m_stack.pop_back();
                         fail(fmt::format("aucune solution trouvee, meilleur: {:.1f}%", m_bestPercent));
                         break;
@@ -573,6 +613,11 @@ Solver::Status Solver::work(double budgetMs) {
                 m_cutoffs = 0;
                 // On reconstruit l'état en rejouant depuis le tout début (aucun checkpoint)
                 beginRestore(m_anchorTick, Phase::StartRoot, true);
+                break;
+            }
+
+            case Phase::ReSurvive: {
+                this->enterSurvive();
                 break;
             }
 

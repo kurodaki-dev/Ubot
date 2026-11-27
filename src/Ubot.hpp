@@ -154,6 +154,7 @@ private:
         NextCandidate,  // essayer le prochain instant de clic/relâche
         CheckCandidate, // l'état du candidat est-il déjà connu comme perdant ?
         StartRoot,      // repartir d'un état reconstruit
+        ReSurvive,      // ré-explorer le noeud courant depuis son état
         Verify,         // rejouer toute la solution depuis le début, sans keyframe
         Rebuild,        // reconstruire des keyframes sûres après une désynchro
         Done,
@@ -203,6 +204,9 @@ private:
     std::vector<uint8_t> m_actionable;    // Loi 1 : instants où un input peut agir
     bool m_prevOnGround = false;
     bool m_forceKeyframe = false;
+    bool m_usePruning = true;             // Loi 1 active (désactivée si elle empêche de trouver)
+    std::vector<GameObject*> m_orbs;      // orbes / anneaux / dash orbs du niveau
+    bool nearOrb(PlayerObject* p) const;
     uint64_t m_budget = 1500;             // Loi 4 : budget de noeuds par sous-arbre
     uint64_t m_cutoffs = 0;
     uint64_t m_pruned = 0;                // candidats éliminés par les lois
