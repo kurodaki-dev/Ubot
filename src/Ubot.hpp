@@ -86,6 +86,7 @@ struct Runtime {
     bool interceptEnd = false;      // pendant le calcul on bloque mort/fin
     bool injecting = false;         // l'input vient du bot (pas du joueur)
     bool safeMode = false;          // aucun progrès sauvegardé
+    bool allowReset = false;        // pendant le calcul, seuls les resets du solveur passent
 
     void clearFlags() { died = false; completed = false; }
 };
@@ -193,6 +194,7 @@ private:
     uint64_t m_ticksSimulated = 0;
     int m_rebuildAttempts = 0;
     uint32_t m_anchorTick = 0;
+    uint64_t m_deaths = 0;
     uint32_t m_desyncTick = 0;
     uint32_t m_lastDesyncTick = 0;
     bool m_stalled = false;

@@ -121,7 +121,7 @@ std::optional<Macro> loadMacro(GJGameLevel* level) {
     std::istringstream in(res.unwrap());
     std::string magic;
     in >> magic;
-    if (magic != "UBOT1") return std::nullopt;
+    if (magic != "UBOT2") return std::nullopt;
 
     Macro m;
     std::string key;
@@ -151,7 +151,7 @@ std::optional<Macro> loadMacro(GJGameLevel* level) {
 
 bool saveMacro(Macro const& m, GJGameLevel* level) {
     std::ostringstream out;
-    out << "UBOT1\n";
+    out << "UBOT2\n";
     out << "id " << m.levelID << "\n";
     out << "hash " << std::hex << m.levelHash << std::dec << "\n";
     out << "ticks " << m.totalTicks << "\n";

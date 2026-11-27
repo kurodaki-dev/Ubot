@@ -99,6 +99,7 @@ void Solver::start(Env env, LevelInfo info) {
     m_failReason.clear();
     m_stalled = false;
     m_bestPercent = 0.f;
+    m_deaths = 0;
     m_startTime = std::chrono::steady_clock::now();
 
     auto& r = rt();
@@ -218,8 +219,23 @@ bool Solver::stepTick() {
         m_env.stepRaw();
     }
     m_ticksSimulated++;
-    // Fin du niveau : l'animation de fin démarre avant levelComplete()
-    if (m_env.pl->m_levelEndAnimationStarted) r.completed = true;
+    // Sécurité : si le jeu a quand même tué le joueur, c'est une mort
+    if (auto p1 = m_env.pl->m_player1; p1 && p1->m_isDead) r.died = true;
+    if (m_env.pl->m_gameState.m_isDualMode) {
+        if (auto p2 = m_env.pl->m_player2; p2 && p2->m_isDead) r.died = true;
+    }
+    if (r.died) {
+        if (m_deaths < 5) {
+            log::info("Ubot: mort au tick {} (x = {:.1f})", r.tick - 1,
+                m_env.pl->m_player1 ? m_env.pl->m_player1->getPositionX() : 0.f);
+        }
+        m_deaths++;
+    }
+    if (r.completed && !r.died) {
+        log::info("Ubot: fin du niveau atteinte au tick {} (x = {:.1f} / longueur {:.1f}, {} inputs)",
+            r.tick, m_env.pl->m_player1 ? m_env.pl->m_player1->getPositionX() : 0.f,
+            m_env.pl->m_levelLength, m_path.size());
+    }
 
     if (r.tick == before && !r.died && !r.completed) {
         m_stalled = true;
@@ -460,8 +476,8 @@ std::string Solver::statusText() const {
     }
     auto secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - m_startTime).count();
     return fmt::format(
-        "Ubot - {}\nMeilleur: {:.1f}%  |  Noeuds: {}  |  Etats perdants: {}\nTicks simules: {}  |  {:.0f}s",
-        phase, m_bestPercent, m_nodes, m_dead.size(), m_ticksSimulated, secs
+        "Ubot - {}\nMeilleur: {:.1f}%  |  Morts: {}  |  Noeuds: {}  |  Etats perdants: {}\nTicks simules: {}  |  {:.0f}s",
+        phase, m_bestPercent, m_deaths, m_nodes, m_dead.size(), m_ticksSimulated, secs
     );
 }
 

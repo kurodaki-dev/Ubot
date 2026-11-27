@@ -69,6 +69,7 @@ class $modify(UbotPlayLayer, PlayLayer) {
         bool solving = false;
         bool solveStarted = false;
         bool desyncWarned = false;
+        bool endShown = false;      // un seul "Level Complete" par essai
         Macro macro;
         LevelInfo info;
         float accumulator = 0.f;
@@ -202,7 +203,9 @@ class $modify(UbotPlayLayer, PlayLayer) {
         r.path = nullptr;
         if (f->overlay) f->overlay->setVisible(Mod::get()->getSettingValue<bool>("solve-overlay"));
         if (f->label) f->label->setString("Ubot - nouveau calcul...");
+        r.allowReset = true;
         this->resetLevel();
+        r.allowReset = false;
     }
 
     void unmute() {
@@ -228,7 +231,11 @@ class $modify(UbotPlayLayer, PlayLayer) {
         Env env;
         env.pl = this;
         env.stepRaw = [this] { this->GJBaseGameLayer::update(1.f / 240.f); };
-        env.reset = [this] { this->resetLevel(); };
+        env.reset = [this] {
+            rt().allowReset = true;
+            this->resetLevel();
+            rt().allowReset = false;
+        };
         solver().start(std::move(env), f->info);
     }
 
@@ -294,10 +301,14 @@ class $modify(UbotPlayLayer, PlayLayer) {
     }
 
     void resetLevel() {
-        PlayLayer::resetLevel();
         auto f = m_fields.self();
-        if (!f->showcase) return;
         auto& r = rt();
+        // Pendant le calcul, on bloque les resets programmés par le jeu
+        // (animation de mort, fin du niveau, etc.) : seul le solveur décide.
+        if (f->showcase && r.mode == Mode::Solving && f->solveStarted && !r.allowReset) return;
+        PlayLayer::resetLevel();
+        if (!f->showcase) return;
+        f->endShown = false;
         r.tick = 0;
         r.appliedHold = false;
         if (m_player1) m_player1->releaseAllButtons();
@@ -308,7 +319,8 @@ class $modify(UbotPlayLayer, PlayLayer) {
     void destroyPlayer(PlayerObject* player, GameObject* object) {
         auto f = m_fields.self();
         auto& r = rt();
-        if (f->showcase && object != m_anticheatSpike) {
+        bool anticheat = m_anticheatSpike && object == m_anticheatSpike;
+        if (f->showcase && !anticheat) {
             if (r.interceptEnd) {
                 r.died = true; // le solveur gère la mort lui-même
                 return;
@@ -325,6 +337,26 @@ class $modify(UbotPlayLayer, PlayLayer) {
         PlayLayer::destroyPlayer(player, object);
     }
 
+    // Pendant le calcul, l'animation de fin ne doit jamais démarrer : sinon elle
+    // programme un "Level Complete" qui s'affiche plus tard pendant la lecture.
+    void playEndAnimationToPos(CCPoint pos) {
+        auto f = m_fields.self();
+        if (f->showcase && rt().interceptEnd) {
+            rt().completed = true;
+            return;
+        }
+        PlayLayer::playEndAnimationToPos(pos);
+    }
+
+    void playPlatformerEndAnimationToPos(CCPoint pos, bool instant) {
+        auto f = m_fields.self();
+        if (f->showcase && rt().interceptEnd) {
+            rt().completed = true;
+            return;
+        }
+        PlayLayer::playPlatformerEndAnimationToPos(pos, instant);
+    }
+
     void levelComplete() {
         auto f = m_fields.self();
         auto& r = rt();
@@ -333,6 +365,8 @@ class $modify(UbotPlayLayer, PlayLayer) {
                 r.completed = true;
                 return;
             }
+            if (f->endShown) return; // jamais deux écrans de fin
+            f->endShown = true;
             m_isTestMode = true; // safe mode : rien n'est enregistré
         }
         PlayLayer::levelComplete();
