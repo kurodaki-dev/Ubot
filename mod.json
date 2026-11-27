@@ -1,0 +1,39 @@
+{
+	"geode": "6.0.0",
+	"gd": {
+		"win": "2.2091",
+		"android": "2.2091",
+		"mac": "2.2091",
+		"ios": "2.2091"
+	},
+	"id": "kurodaki.ubot",
+	"name": "Ubot",
+	"version": "v1.0.0",
+	"developer": "Kurodaki",
+	"description": "Bouton Bot Showcase : un algorithme calcule et joue le niveau a ta place (safe mode).",
+	"tags": ["gameplay", "utility"],
+	"settings": {
+		"max-solve-minutes": {
+			"type": "int",
+			"name": "Temps max de calcul (minutes)",
+			"description": "Le calcul s'arrete apres ce temps. 0 = illimite.",
+			"default": 30,
+			"min": 0,
+			"max": 600
+		},
+		"solve-budget-ms": {
+			"type": "int",
+			"name": "Temps de calcul par image (ms)",
+			"description": "Plus haut = calcul plus rapide mais le jeu repond moins.",
+			"default": 12,
+			"min": 2,
+			"max": 100
+		},
+		"solve-overlay": {
+			"type": "bool",
+			"name": "Ecran noir pendant le calcul",
+			"description": "Cache le niveau pendant que le bot calcule toutes les possibilites.",
+			"default": true
+		}
+	}
+}
