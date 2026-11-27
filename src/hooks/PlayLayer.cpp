@@ -9,6 +9,9 @@
 using namespace geode::prelude;
 using namespace ubot;
 
+// Défini plus bas (a besoin de UbotPlayLayer)
+static bool ubotUpdate(GJBaseGameLayer* layer, float dt);
+
 static Solver& solver() {
     static Solver s_solver;
     return s_solver;
@@ -30,6 +33,14 @@ class $modify(UbotBaseLayer, GJBaseGameLayer) {
         applyInputForTick(this);
         GJBaseGameLayer::processCommands(dt, isHalfTick, isLastTick);
         rt().tick++;
+    }
+
+    // En 2.2091 PlayLayer n'a pas son propre update : c'est celui de
+    // GJBaseGameLayer qui est appelé à chaque image.
+    void update(float dt) {
+        auto& r = rt();
+        if (r.layer && static_cast<GJBaseGameLayer*>(r.layer) == this && ubotUpdate(this, dt)) return;
+        GJBaseGameLayer::update(dt);
     }
 
     void handleButton(bool down, int button, bool isPlayer1) {
@@ -64,7 +75,9 @@ class $modify(UbotPlayLayer, PlayLayer) {
         float oldMusic = -1.f;
         float oldSfx = -1.f;
         CCLabelBMFont* label = nullptr;
-        CCLayerColor* overlay = nullptr;
+        CCLayerColor* overlay = nullptr;     // écran de chargement (niveau masqué)
+        CCLayerColor* barFill = nullptr;
+        CCLabelBMFont* barText = nullptr;
 
         ~Fields() {
             if (!showcase) return;
@@ -111,9 +124,29 @@ class $modify(UbotPlayLayer, PlayLayer) {
         r.appliedHold = false;
 
         auto win = CCDirector::get()->getWinSize();
-        f->overlay = CCLayerColor::create({0, 0, 0, 190});
+        // Écran de chargement : le niveau est caché pendant le calcul
+        f->overlay = CCLayerColor::create({8, 8, 20, 255});
         f->overlay->setVisible(false);
         this->addChild(f->overlay, 9999);
+
+        auto title = CCLabelBMFont::create("Ubot calcule le niveau...", "bigFont.fnt");
+        title->setScale(0.6f);
+        title->setPosition({win.width / 2.f, win.height / 2.f + 40.f});
+        f->overlay->addChild(title);
+
+        constexpr float barW = 300.f, barH = 16.f;
+        auto barBg = CCLayerColor::create({50, 50, 70, 255}, barW + 4.f, barH + 4.f);
+        barBg->setPosition({win.width / 2.f - barW / 2.f - 2.f, win.height / 2.f - barH / 2.f - 2.f});
+        f->overlay->addChild(barBg);
+
+        f->barFill = CCLayerColor::create({80, 230, 90, 255}, 0.f, barH);
+        f->barFill->setPosition({win.width / 2.f - barW / 2.f, win.height / 2.f - barH / 2.f});
+        f->overlay->addChild(f->barFill);
+
+        f->barText = CCLabelBMFont::create("0%", "bigFont.fnt");
+        f->barText->setScale(0.45f);
+        f->barText->setPosition({win.width / 2.f, win.height / 2.f - 28.f});
+        f->overlay->addChild(f->barText);
 
         f->label = CCLabelBMFont::create("Ubot", "bigFont.fnt");
         f->label->setAnchorPoint({0.f, 1.f});
@@ -130,7 +163,7 @@ class $modify(UbotPlayLayer, PlayLayer) {
             r.interceptEnd = true;
             r.path = nullptr; // le solveur fournit son chemin au démarrage
             f->overlay->setVisible(Mod::get()->getSettingValue<bool>("solve-overlay"));
-            f->label->setString("Ubot - en attente du debut du niveau...");
+            f->label->setString("Ubot - preparation...");
         }
         return true;
     }
@@ -194,17 +227,23 @@ class $modify(UbotPlayLayer, PlayLayer) {
 
         Env env;
         env.pl = this;
-        env.stepRaw = [this] { this->PlayLayer::update(1.f / 240.f); };
+        env.stepRaw = [this] { this->GJBaseGameLayer::update(1.f / 240.f); };
         env.reset = [this] { this->resetLevel(); };
         solver().start(std::move(env), f->info);
     }
 
-    void update(float dt) {
+    void updateLoadingBar() {
+        auto f = m_fields.self();
+        float pct = std::clamp(solver().bestPercent(), 0.f, 100.f);
+        if (f->barFill) f->barFill->setContentSize({300.f * pct / 100.f, 16.f});
+        if (f->barText) f->barText->setString(fmt::format("{:.1f}%", pct).c_str());
+    }
+
+    // Retourne true si Ubot a géré l'image (l'update normal ne doit pas tourner)
+    bool ubotTick(float dt) {
         auto f = m_fields.self();
         auto& r = rt();
-        if (!f->showcase || r.mode == Mode::Off || !m_started) {
-            return PlayLayer::update(dt);
-        }
+        if (!f->showcase || r.mode == Mode::Off || !m_started) return false;
 
         if (r.mode == Mode::Solving) {
             if (!f->solveStarted) this->startSolver();
@@ -212,6 +251,7 @@ class $modify(UbotPlayLayer, PlayLayer) {
             double budget = static_cast<double>(Mod::get()->getSettingValue<int64_t>("solve-budget-ms"));
             auto status = solver().work(budget);
             if (f->label) f->label->setString(solver().statusText().c_str());
+            this->updateLoadingBar();
 
             if (status == Solver::Status::Solved) {
                 f->macro.levelID = m_level->m_levelID.value();
@@ -238,7 +278,7 @@ class $modify(UbotPlayLayer, PlayLayer) {
                 Notification::create("Ubot: " + reason, NotificationIcon::Error)->show();
                 this->resetLevel();
             }
-            return;
+            return true;
         }
 
         // Lecture : même découpage en pas de 1/240 s que pendant le calcul,
@@ -248,8 +288,9 @@ class $modify(UbotPlayLayer, PlayLayer) {
         f->accumulator -= static_cast<float>(steps);
         steps = std::min(steps, 16);
         for (int i = 0; i < steps; ++i) {
-            PlayLayer::update(1.f / 240.f);
+            this->GJBaseGameLayer::update(1.f / 240.f);
         }
+        return true;
     }
 
     void resetLevel() {
@@ -309,4 +350,8 @@ namespace ubot {
             static_cast<UbotPlayLayer*>(pl)->restartSolve();
         }
     }
+}
+
+static bool ubotUpdate(GJBaseGameLayer* layer, float dt) {
+    return static_cast<UbotPlayLayer*>(static_cast<PlayLayer*>(layer))->ubotTick(dt);
 }

@@ -118,6 +118,7 @@ public:
     std::vector<uint32_t> const& solution() const { return m_solution; }
     uint32_t solutionTicks() const { return m_solutionTicks; }
     std::string const& failReason() const { return m_failReason; }
+    float bestPercent() const { return m_bestPercent; }
 
 private:
     struct Keyframe {
