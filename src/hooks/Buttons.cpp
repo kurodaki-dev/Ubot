@@ -52,7 +52,7 @@ namespace {
         return {local.x, local.y - offset};
     }
 
-    void confirmDelete(GJGameLevel* level) {
+    void ubotConfirmDeleteMacro(GJGameLevel* level) {
         if (!level) return;
         if (!hasMacro(level)) {
             Notification::create("Ubot: aucune macro pour ce niveau", NotificationIcon::Info)->show();
@@ -98,7 +98,7 @@ class $modify(UbotLevelInfoLayer, LevelInfoLayer) {
         s_fromUbot = false;
     }
 
-    void onUbotDelete(CCObject*) { confirmDelete(m_level); }
+    void onUbotDelete(CCObject*) { ubotConfirmDeleteMacro(m_level); }
 
     void onPlay(CCObject* sender) {
         // bouton Play normal : pas de showcase
@@ -131,7 +131,7 @@ class $modify(UbotEditLevelLayer, EditLevelLayer) {
         s_fromUbot = false;
     }
 
-    void onUbotDelete(CCObject*) { confirmDelete(m_level); }
+    void onUbotDelete(CCObject*) { ubotConfirmDeleteMacro(m_level); }
 
     void onPlay(CCObject* sender) {
         if (!s_fromUbot) rt().pendingShowcase = false;
@@ -160,7 +160,7 @@ class $modify(UbotEditorPauseLayer, EditorPauseLayer) {
     }
 
     void onUbotDelete(CCObject*) {
-        confirmDelete(m_editorLayer ? m_editorLayer->m_level : nullptr);
+        ubotConfirmDeleteMacro(m_editorLayer ? m_editorLayer->m_level : nullptr);
     }
 
     void onSaveAndPlay(CCObject* sender) {
