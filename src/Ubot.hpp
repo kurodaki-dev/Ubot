@@ -141,6 +141,8 @@ private:
         bool hold = false;
         uint64_t key = 0;
         bool expanded = false;
+        uint64_t startNodes = 0;  // m_nodes à la création (budget du sous-arbre)
+        uint64_t startCutoffs = 0; // si un descendant a été coupé, l'échec n'est pas prouvé
         std::vector<Candidate> cands;
         size_t next = 0;
     };
@@ -162,6 +164,9 @@ private:
     bool stepTick();                 // false si mort ou fin (flags dans rt())
     void beginRestore(uint32_t tick, Phase after, bool forceReset = false);
     void maybeKeyframe();
+    void enterSurvive();
+    bool actionableNow(bool pressing) const;
+    void buildCandidates(Node& n, uint32_t window, bool survived);
     void clearKeyframes();
     uint64_t prefixSig(size_t count) const;
     size_t countBefore(uint32_t tick) const;
@@ -195,6 +200,12 @@ private:
     int m_rebuildAttempts = 0;
     uint32_t m_anchorTick = 0;
     uint64_t m_deaths = 0;
+    std::vector<uint8_t> m_actionable;    // Loi 1 : instants où un input peut agir
+    bool m_prevOnGround = false;
+    bool m_forceKeyframe = false;
+    uint64_t m_budget = 1500;             // Loi 4 : budget de noeuds par sous-arbre
+    uint64_t m_cutoffs = 0;
+    uint64_t m_pruned = 0;                // candidats éliminés par les lois
     uint32_t m_desyncTick = 0;
     uint32_t m_lastDesyncTick = 0;
     bool m_stalled = false;

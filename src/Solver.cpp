@@ -24,6 +24,31 @@ using namespace geode::prelude;
 //  la vitesse, les portails, les orbes et les triggers sont simulés par le
 //  vrai moteur de GD, donc toutes les contraintes du niveau sont respectées.
 //
+//  Lois et principes utilisés pour réduire l'arbre de recherche :
+//
+//   Loi 1 - Actionnabilité : un input ne peut changer le futur que si le
+//           joueur peut y réagir. Cube / balle / araignée / robot : seulement
+//           au sol, sur un orbe/anneau, ou juste avant d'atterrir (buffer).
+//           Robot : relâcher en l'air coupe la poussée, donc ça compte.
+//           Vaisseau / wave / ufo / swing : tout instant compte.
+//           -> en l'air sans orbe, le cube ne peut rien : ces instants sont
+//              ignorés, et un état sans aucun instant utile est perdu.
+//   Loi 2 - Fenêtre continue : les bons instants de clic forment un
+//           intervalle. On échantillonne grossièrement (pas selon le mode),
+//           puis on affine, au lieu de tout tester dans l'ordre.
+//   Loi 3 - Marge : on évite de commencer par le tout dernier tick possible
+//           (frame perfect), plus fragile à rejouer.
+//   Loi 4 - Élargissement progressif : chaque sous-arbre a un budget de
+//           noeuds. Dépassé, on remonte plus haut (l'erreur est souvent un
+//           clic plus tôt). Si tout échoue, le budget est multiplié par 4 :
+//           la recherche reste complète.
+//   Loi 5 - Convergence : deux chemins qui mènent au même état (même tick,
+//           position, vitesse, mode, gravité, clic) ont le même futur. Un
+//           état prouvé perdant n'est jamais réexploré.
+//   Loi 6 - Retour rapide : une keyframe est posée au début de chaque noeud
+//           (quand le clic est relâché), donc tester un candidat ne rejoue
+//           que quelques ticks.
+//
 //  Quand un chemin finit le niveau, il est rejoué entièrement depuis le début
 //  sans aucun checkpoint (vérification). En cas de désynchronisation, la
 //  recherche reprend un peu avant l'endroit fautif à partir d'un état
@@ -100,6 +125,9 @@ void Solver::start(Env env, LevelInfo info) {
     m_stalled = false;
     m_bestPercent = 0.f;
     m_deaths = 0;
+    m_budget = 1500;
+    m_cutoffs = 0;
+    m_pruned = 0;
     m_startTime = std::chrono::steady_clock::now();
 
     auto& r = rt();
@@ -169,7 +197,9 @@ uint64_t Solver::stateKey(uint32_t tick, bool hold) const {
 void Solver::maybeKeyframe() {
     auto& r = rt();
     uint32_t tick = r.tick;
-    if (tick < m_lastKeyframeTick + m_keyframeInterval) return;
+    bool forced = m_forceKeyframe;
+    m_forceKeyframe = false;
+    if (!forced && tick < m_lastKeyframeTick + m_keyframeInterval) return;
     // Uniquement quand le clic est relâché : un checkpoint ne garde pas
     // forcément l'état "maintenu" des boutons.
     if (tick > 0 && holdingAt(m_path, tick - 1)) return;
@@ -293,9 +323,10 @@ void Solver::startRoot(uint32_t tick) {
     root.viaToggle = false;
     root.hold = holdingAt(m_path, tick);
     root.key = stateKey(tick, root.hold);
+    root.startNodes = m_nodes;
+    root.startCutoffs = m_cutoffs;
     m_stack.push_back(std::move(root));
-    m_surviveCount = 0;
-    m_phase = Phase::Survive;
+    this->enterSurvive();
 }
 
 void Solver::finishSearch() {
@@ -308,6 +339,77 @@ void Solver::finishSearch() {
     m_lastKeyframeTick = 0;
     rt().clearFlags();
     m_phase = Phase::Verify;
+}
+
+void Solver::enterSurvive() {
+    m_actionable.clear();
+    m_prevOnGround = m_env.pl->m_player1 && m_env.pl->m_player1->m_isOnGround;
+    m_forceKeyframe = true; // Loi 6
+    m_surviveCount = 0;
+    m_phase = Phase::Survive;
+}
+
+bool Solver::actionableNow(bool pressing) const {
+    auto check = [pressing](PlayerObject* p) {
+        if (!p) return false;
+        // modes à contrôle continu : chaque instant compte
+        if (p->m_isShip || p->m_isDart || p->m_isBird || p->m_isSwing) return true;
+        // orbes / anneaux / dash orbs touchés
+        if (p->m_touchingRings && p->m_touchingRings->count() > 0) return true;
+        if (p->m_isDashing) return true;
+        // au sol : sauter, inverser la gravité, se téléporter...
+        if (p->m_isOnGround) return true;
+        // robot en l'air : relâcher coupe la poussée
+        if (!pressing && p->m_isRobot) return true;
+        return false;
+    };
+    if (check(m_env.pl->m_player1)) return true;
+    if (m_env.pl->m_gameState.m_isDualMode && check(m_env.pl->m_player2)) return true;
+    return false;
+}
+
+void Solver::buildCandidates(Node& n, uint32_t window, bool survived) {
+    uint32_t dmin = (m_stack.size() == 1) ? 0 : 1;
+    n.cands.clear();
+    n.next = 0;
+    n.expanded = true;
+
+    // Pas de survie atteint : continuer sans rien changer est un candidat
+    if (survived) n.cands.push_back({window, false});
+
+    // Instants utiles (Loi 1), du plus tard au plus tôt
+    std::vector<uint32_t> delays;
+    for (int64_t d = window; d >= static_cast<int64_t>(dmin); --d) {
+        bool act = static_cast<size_t>(d) >= m_actionable.size() || m_actionable[d] != 0;
+        // un anneau touché juste avant/après compte aussi (contact détecté avec 1 tick de décalage)
+        if (!act && d + 1 < static_cast<int64_t>(m_actionable.size()) && m_actionable[d + 1]) act = true;
+        if (act) delays.push_back(static_cast<uint32_t>(d));
+        else m_pruned++;
+    }
+    if (delays.empty()) return; // Loi 1 : rien ne peut sauver cet état
+
+    // Loi 2 : pas d'échantillonnage selon le mode du joueur
+    uint32_t stride = 4;
+    if (auto p = m_env.pl->m_player1) {
+        if (p->m_isShip || p->m_isDart) stride = 2;
+        else if (p->m_isBird || p->m_isSwing) stride = 3;
+        else stride = 5;
+    }
+
+    // Loi 3 : on commence un peu avant le dernier instant possible
+    size_t first = std::min<size_t>(2, delays.size() - 1);
+    std::vector<uint8_t> used(delays.size(), 0);
+    auto take = [&](size_t i) {
+        if (i < delays.size() && !used[i]) {
+            used[i] = 1;
+            n.cands.push_back({delays[i], true});
+        }
+    };
+    for (size_t i = first; i < delays.size(); i += stride) take(i);        // passe grossière
+    if (stride > 2) {
+        for (size_t i = first + stride / 2; i < delays.size(); i += stride) take(i); // affinage
+    }
+    for (size_t i = 0; i < delays.size(); ++i) take(i);                   // tout le reste
 }
 
 Solver::Status Solver::work(double budgetMs) {
@@ -346,6 +448,17 @@ Solver::Status Solver::work(double budgetMs) {
 
             case Phase::Survive: {
                 Node& n = m_stack.back();
+                // Loi 1 : l'input à ce tick pourrait-il changer quelque chose ?
+                {
+                    bool pressing = !n.hold;
+                    bool act = this->actionableNow(pressing);
+                    auto p1 = m_env.pl->m_player1;
+                    bool onGround = p1 && p1->m_isOnGround;
+                    // juste avant d'atterrir : un clic en l'air est mis en buffer
+                    if (onGround && !m_prevOnGround && !m_actionable.empty()) m_actionable.back() = 1;
+                    m_prevOnGround = onGround;
+                    m_actionable.push_back(act ? 1 : 0);
+                }
                 bool alive = stepTick();
                 if (!alive) {
                     if (m_stalled) { fail("le jeu ne progresse plus (pause ?)"); break; }
@@ -357,29 +470,42 @@ Solver::Status Solver::work(double budgetMs) {
 
                 // Fenêtre d'action : on peut inverser le clic à n.tick + d
                 uint32_t window = alive ? m_cap : (r.tick - 1 - n.tick);
-                uint32_t dmin = (m_stack.size() == 1) ? 0 : 1;
-                n.cands.clear();
-                if (reachedCap) n.cands.push_back({m_cap, false});
-                for (int64_t d = window; d >= static_cast<int64_t>(dmin); --d) {
-                    n.cands.push_back({static_cast<uint32_t>(d), true});
-                }
-                n.next = 0;
-                n.expanded = true;
+                this->buildCandidates(n, window, reachedCap);
                 m_phase = Phase::NextCandidate;
                 break;
             }
 
             case Phase::NextCandidate: {
                 Node& n = m_stack.back();
-                if (n.next >= n.cands.size()) {
-                    // Tous les choix depuis cet état mènent à la mort
-                    m_dead.insert(n.key);
+                bool isRoot = m_stack.size() == 1;
+                // Loi 4 : sous-arbre trop coûteux -> on remonte (sans le déclarer perdant)
+                bool overBudget = !isRoot && (m_nodes - n.startNodes) > m_budget;
+                if (n.next >= n.cands.size() || overBudget) {
+                    if (overBudget && n.next < n.cands.size()) {
+                        m_cutoffs++;
+                    } else if (m_cutoffs == n.startCutoffs) {
+                        // Tous les choix depuis cet état mènent à la mort (prouvé :
+                        // aucun descendant n'a été abandonné pour cause de budget)
+                        m_dead.insert(n.key);
+                    }
+                    if (isRoot) {
+                        if (m_cutoffs > 0) {
+                            // Rien trouvé avec ce budget : on élargit et on recommence
+                            m_budget *= 4;
+                            m_cutoffs = 0;
+                            n.next = 0;
+                            n.startNodes = m_nodes;
+                            n.startCutoffs = 0;
+                            log::info("Ubot: budget elargi a {} noeuds", m_budget);
+                            break;
+                        }
+                        m_stack.pop_back();
+                        fail(fmt::format("aucune solution trouvee, meilleur: {:.1f}%", m_bestPercent));
+                        break;
+                    }
                     size_t parentSize = n.toggleCount - (n.viaToggle ? 1 : 0);
                     m_stack.pop_back();
                     popToggles(parentSize);
-                    if (m_stack.empty()) {
-                        fail(fmt::format("aucune solution trouvee, meilleur: {:.1f}%", m_bestPercent));
-                    }
                     break;
                 }
                 m_pending = n.cands[n.next++];
@@ -404,10 +530,11 @@ Solver::Status Solver::work(double budgetMs) {
                 child.viaToggle = m_pending.toggle;
                 child.hold = newHold;
                 child.key = key;
+                child.startNodes = m_nodes;
+                child.startCutoffs = m_cutoffs;
                 m_stack.push_back(std::move(child));
                 m_nodes++;
-                m_surviveCount = 0;
-                m_phase = Phase::Survive;
+                this->enterSurvive();
                 break;
             }
 
@@ -443,6 +570,7 @@ Solver::Status Solver::work(double budgetMs) {
                 clearKeyframes();
                 m_dead.clear();
                 m_stack.clear();
+                m_cutoffs = 0;
                 // On reconstruit l'état en rejouant depuis le tout début (aucun checkpoint)
                 beginRestore(m_anchorTick, Phase::StartRoot, true);
                 break;
@@ -476,8 +604,10 @@ std::string Solver::statusText() const {
     }
     auto secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - m_startTime).count();
     return fmt::format(
-        "Ubot - {}\nMeilleur: {:.1f}%  |  Morts: {}  |  Noeuds: {}  |  Etats perdants: {}\nTicks simules: {}  |  {:.0f}s",
-        phase, m_bestPercent, m_deaths, m_nodes, m_dead.size(), m_ticksSimulated, secs
+        "Ubot - {}\nMeilleur: {:.1f}%  |  Morts: {}  |  Noeuds: {}  |  Etats perdants: {}\n"
+        "Elagues: {}  |  Budget: {}  |  Ticks simules: {}  |  {:.0f}s",
+        phase, m_bestPercent, m_deaths, m_nodes, m_dead.size(),
+        m_pruned, m_budget, m_ticksSimulated, secs
     );
 }
 
